@@ -3,6 +3,7 @@ from flask_cors import CORS
 from datetime import datetime
 import database as db
 import re
+import os
 
 app = Flask(__name__)
 CORS(app)  # Permet les requêtes depuis Vercel
@@ -122,5 +123,8 @@ def health_check():
         'message': 'API Boîte à Idées ISI est en ligne'
     }), 200
 
+import os
+
 if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=5000)
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port)
