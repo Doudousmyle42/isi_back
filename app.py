@@ -11,8 +11,8 @@ CORS(app)  # Permet les requêtes depuis Vercel
 db.init_db()
 
 def validate_email(email):
-    """Valide que l'email est au format @isi.com"""
-    pattern = r'^[a-zA-Z0-9._%+-]+@isi\.com$'
+    """Valide que l'email est au format @groupeisi.com"""
+    pattern = r'^[a-zA-Z0-9._%+-]+@groupeisi\.com$'
     return re.match(pattern, email) is not None
 
 @app.route('/api/submit-idea', methods=['POST'])
@@ -29,7 +29,7 @@ def submit_idea():
         if not validate_email(email):
             return jsonify({
                 'success': False,
-                'message': 'Email invalide. Utilisez votre email @isi.com'
+                'message': 'Email invalide. Utilisez votre email @groupeisi.com'
             }), 400
         
         if len(idea) < 20:
