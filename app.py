@@ -6,7 +6,19 @@ import re
 import os
 
 app = Flask(__name__)
-CORS(app)  # Permet les requêtes depuis Vercel
+
+# Configuration CORS pour autoriser Vercel
+CORS(app, resources={
+    r"/api/*": {
+        "origins": [
+            "https://isi-front-tau.vercel.app",
+            "http://localhost:3000",
+            "http://127.0.0.1:5000"
+        ],
+        "methods": ["GET", "POST", "OPTIONS"],
+        "allow_headers": ["Content-Type"]
+    }
+})
 
 # Initialiser la base de données
 db.init_db()
