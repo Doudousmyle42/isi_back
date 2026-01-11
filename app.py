@@ -11,7 +11,7 @@ app = Flask(__name__)
 
 # Configuration CORS
 CORS(app, 
-     origins="*",
+     origins=["https://isi-front-tau.vercel.app"],
      allow_headers=["Content-Type", "Authorization"],
      methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
      supports_credentials=False)
@@ -29,13 +29,6 @@ mail = Mail(app)
 
 # Initialiser la base de données
 db.init_db()
-
-@app.after_request
-def after_request(response):
-    response.headers.add('Access-Control-Allow-Origin', '*')
-    response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
-    response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
-    return response
 
 def validate_email(email):
     """Valide le format d'email"""
