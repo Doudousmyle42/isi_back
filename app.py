@@ -6,10 +6,11 @@ from dotenv import load_dotenv
 import database as db
 import os
 import re
+import threading
 
 app = Flask(__name__)
 
-# Configuration CORS AMÉLIORÉE
+# Configuration CORS
 CORS(app, 
      resources={
          r"/api/*": {
@@ -22,13 +23,18 @@ CORS(app,
          }
      })
 
-# Configuration Email depuis variables d'environnement
+# Configuration Email
 app.config['MAIL_SERVER'] = os.getenv('MAIL_SERVER', 'smtp.gmail.com')
 app.config['MAIL_PORT'] = int(os.getenv('MAIL_PORT', 587))
 app.config['MAIL_USE_TLS'] = os.getenv('MAIL_USE_TLS', 'True') == 'True'
 app.config['MAIL_USERNAME'] = os.getenv('MAIL_USERNAME')
 app.config['MAIL_PASSWORD'] = os.getenv('MAIL_PASSWORD')
 app.config['MAIL_DEFAULT_SENDER'] = os.getenv('MAIL_USERNAME')
+app.config['MAIL_MAX_EMAILS'] = None
+app.config['MAIL_SUPPRESS_SEND'] = False
+
+# Timeout pour l'envoi d'email
+app.config['MAIL_TIMEOUT'] = 30
 
 mail = Mail(app)
 
@@ -40,7 +46,16 @@ def validate_email(email):
     pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
     return re.match(pattern, email) is not None
 
-# Middleware pour ajouter les headers CORS à toutes les réponses
+def send_async_email(app, msg):
+    """Envoyer un email en arrière-plan"""
+    with app.app_context():
+        try:
+            mail.send(msg)
+            print(f"✅ Email envoyé avec succès")
+        except Exception as e:
+            print(f"❌ Erreur envoi email async: {e}")
+
+# Middleware CORS
 @app.after_request
 def after_request(response):
     origin = request.headers.get('Origin')
@@ -54,7 +69,6 @@ def after_request(response):
 @app.route('/api/send-otp', methods=['POST', 'OPTIONS'])
 def send_otp():
     if request.method == 'OPTIONS':
-        # Réponse vide avec status 200 pour preflight
         return '', 200
         
     try:
@@ -78,12 +92,11 @@ def send_otp():
         code = db.generate_otp()
         db.save_otp(email, code)
         
-        # Envoyer l'email
-        try:
-            msg = Message(
-                subject='Votre code de vérification - Boîte à Idées ISI',
-                recipients=[email],
-                body=f'''Bonjour,
+        # Préparer l'email
+        msg = Message(
+            subject='Votre code de vérification - Boîte à Idées ISI',
+            recipients=[email],
+            body=f'''Bonjour,
 
 Votre code de vérification pour soumettre une idée est :
 
@@ -96,19 +109,17 @@ Si vous n'avez pas demandé ce code, ignorez ce message.
 Cordialement,
 L'équipe ISI
 '''
-            )
-            mail.send(msg)
-            
-            return jsonify({
-                'success': True,
-                'message': 'Code envoyé par email'
-            }), 200
-        except Exception as e:
-            print(f"Erreur envoi email: {e}")
-            return jsonify({
-                'success': False,
-                'message': 'Erreur lors de l\'envoi de l\'email'
-            }), 500
+        )
+        
+        # Envoyer l'email de manière asynchrone
+        thread = threading.Thread(target=send_async_email, args=(app._get_current_object(), msg))
+        thread.start()
+        
+        # Répondre immédiatement sans attendre l'envoi
+        return jsonify({
+            'success': True,
+            'message': 'Code envoyé par email'
+        }), 200
         
     except Exception as e:
         print(f"Erreur send_otp: {e}")
@@ -271,7 +282,7 @@ def home():
         }
     }), 200
 
-# Gestion des erreurs 404
+# Gestion des erreurs
 @app.errorhandler(404)
 def not_found(error):
     return jsonify({
@@ -279,7 +290,6 @@ def not_found(error):
         'message': 'Route non trouvée'
     }), 404
 
-# Gestion des erreurs 500
 @app.errorhandler(500)
 def internal_error(error):
     return jsonify({
