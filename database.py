@@ -2,18 +2,26 @@ import psycopg
 from psycopg.rows import dict_row
 import os
 from datetime import datetime, timedelta
-import json
 import secrets
 
+# Fix pour Render.com : convertir postgres:// en postgresql://
 DATABASE_URL = os.environ.get('DATABASE_URL')
+if DATABASE_URL and DATABASE_URL.startswith('postgres://'):
+    DATABASE_URL = DATABASE_URL.replace('postgres://', 'postgresql://', 1)
+
+print(f"🔗 Connexion à la base de données...")
 
 def get_connection():
     """Créer une connexion à la base de données PostgreSQL"""
     try:
+        if not DATABASE_URL:
+            raise Exception("DATABASE_URL n'est pas définie dans les variables d'environnement")
+        
         conn = psycopg.connect(DATABASE_URL, row_factory=dict_row)
         return conn
     except Exception as e:
         print(f"❌ Erreur de connexion à la base de données: {e}")
+        print(f"DATABASE_URL présente: {'Oui' if DATABASE_URL else 'Non'}")
         raise
 
 def init_db():
@@ -136,9 +144,13 @@ def cleanup_old_otps():
             WHERE expires_at < NOW() - INTERVAL '1 day'
         ''')
         
+        deleted = cursor.rowcount
         conn.commit()
         cursor.close()
         conn.close()
+        
+        if deleted > 0:
+            print(f"🧹 {deleted} OTP expirés supprimés")
     except Exception as e:
         print(f"❌ Erreur cleanup_old_otps: {e}")
 
