@@ -9,13 +9,18 @@ import re
 
 app = Flask(__name__)
 
-# Configuration CORS
+# Configuration CORS AMÉLIORÉE
 CORS(app, 
-     origins=["https://isi-front-tau.vercel.app"],
-     allow_headers=["Content-Type", "Authorization"],
-     methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-     supports_credentials=False)
-
+     resources={
+         r"/api/*": {
+             "origins": ["https://isi-front-tau.vercel.app", "http://localhost:3000"],
+             "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+             "allow_headers": ["Content-Type", "Authorization"],
+             "expose_headers": ["Content-Type"],
+             "supports_credentials": False,
+             "max_age": 3600
+         }
+     })
 
 # Configuration Email depuis variables d'environnement
 app.config['MAIL_SERVER'] = os.getenv('MAIL_SERVER', 'smtp.gmail.com')
@@ -35,14 +40,22 @@ def validate_email(email):
     pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
     return re.match(pattern, email) is not None
 
-@app.route('/api/<path:path>', methods=['OPTIONS'])
-def handle_options(path):
-    return '', 204
+# Middleware pour ajouter les headers CORS à toutes les réponses
+@app.after_request
+def after_request(response):
+    origin = request.headers.get('Origin')
+    if origin in ['https://isi-front-tau.vercel.app', 'http://localhost:3000']:
+        response.headers.add('Access-Control-Allow-Origin', origin)
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
+        response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
+        response.headers.add('Access-Control-Max-Age', '3600')
+    return response
 
 @app.route('/api/send-otp', methods=['POST', 'OPTIONS'])
 def send_otp():
     if request.method == 'OPTIONS':
-        return '', 204
+        # Réponse vide avec status 200 pour preflight
+        return '', 200
         
     try:
         data = request.get_json()
@@ -98,6 +111,7 @@ L'équipe ISI
             }), 500
         
     except Exception as e:
+        print(f"Erreur send_otp: {e}")
         return jsonify({
             'success': False,
             'message': f'Erreur serveur: {str(e)}'
@@ -106,7 +120,7 @@ L'équipe ISI
 @app.route('/api/verify-otp', methods=['POST', 'OPTIONS'])
 def verify_otp():
     if request.method == 'OPTIONS':
-        return '', 204
+        return '', 200
         
     try:
         data = request.get_json()
@@ -132,6 +146,7 @@ def verify_otp():
             }), 401
         
     except Exception as e:
+        print(f"Erreur verify_otp: {e}")
         return jsonify({
             'success': False,
             'message': f'Erreur serveur: {str(e)}'
@@ -140,7 +155,7 @@ def verify_otp():
 @app.route('/api/submit-idea', methods=['POST', 'OPTIONS'])
 def submit_idea():
     if request.method == 'OPTIONS':
-        return '', 204
+        return '', 200
         
     try:
         data = request.get_json()
@@ -186,6 +201,7 @@ def submit_idea():
         }), 201
         
     except Exception as e:
+        print(f"Erreur submit_idea: {e}")
         return jsonify({
             'success': False,
             'message': f'Erreur serveur: {str(e)}'
@@ -194,7 +210,7 @@ def submit_idea():
 @app.route('/api/ideas', methods=['GET', 'OPTIONS'])
 def get_ideas():
     if request.method == 'OPTIONS':
-        return '', 204
+        return '', 200
         
     try:
         ideas = db.get_all_ideas()
@@ -204,6 +220,7 @@ def get_ideas():
             'ideas': ideas
         }), 200
     except Exception as e:
+        print(f"Erreur get_ideas: {e}")
         return jsonify({
             'success': False,
             'message': f'Erreur: {str(e)}'
@@ -212,7 +229,7 @@ def get_ideas():
 @app.route('/api/stats', methods=['GET', 'OPTIONS'])
 def get_stats():
     if request.method == 'OPTIONS':
-        return '', 204
+        return '', 200
         
     try:
         stats = db.get_statistics()
@@ -221,6 +238,7 @@ def get_stats():
             'stats': stats
         }), 200
     except Exception as e:
+        print(f"Erreur get_stats: {e}")
         return jsonify({
             'success': False,
             'message': f'Erreur: {str(e)}'
@@ -229,11 +247,12 @@ def get_stats():
 @app.route('/api/health', methods=['GET', 'OPTIONS'])
 def health_check():
     if request.method == 'OPTIONS':
-        return '', 204
+        return '', 200
         
     return jsonify({
         'status': 'OK',
-        'message': 'API Boîte à Idées ISI est en ligne'
+        'message': 'API Boîte à Idées ISI est en ligne',
+        'cors': 'enabled'
     }), 200
 
 @app.route('/', methods=['GET'])
@@ -241,6 +260,7 @@ def home():
     return jsonify({
         'message': 'Bienvenue sur l\'API Boîte à Idées ISI',
         'status': 'online',
+        'cors': 'enabled',
         'endpoints': {
             'health': '/api/health',
             'send_otp': '/api/send-otp (POST)',
@@ -251,7 +271,22 @@ def home():
         }
     }), 200
 
+# Gestion des erreurs 404
+@app.errorhandler(404)
+def not_found(error):
+    return jsonify({
+        'success': False,
+        'message': 'Route non trouvée'
+    }), 404
+
+# Gestion des erreurs 500
+@app.errorhandler(500)
+def internal_error(error):
+    return jsonify({
+        'success': False,
+        'message': 'Erreur interne du serveur'
+    }), 500
+
 if __name__ == '__main__':
-    import os
     port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port)
+    app.run(host='0.0.0.0', port=port, debug=False)
