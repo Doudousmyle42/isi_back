@@ -1,13 +1,11 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from flask_mail import Mail, Message
 from datetime import datetime
 from dotenv import load_dotenv
 import database as db
 import os
 import re
-import threading
-import traceback
+import resend
 
 app = Flask(__name__)
 
@@ -24,24 +22,9 @@ CORS(app,
          }
      })
 
-# Configuration Email
-app.config['MAIL_SERVER'] = os.getenv('MAIL_SERVER', 'smtp.gmail.com')
-app.config['MAIL_PORT'] = int(os.getenv('MAIL_PORT', 587))
-app.config['MAIL_USE_TLS'] = os.getenv('MAIL_USE_TLS', 'True') == 'True'
-app.config['MAIL_USERNAME'] = os.getenv('MAIL_USERNAME')
-app.config['MAIL_PASSWORD'] = os.getenv('MAIL_PASSWORD')
-app.config['MAIL_DEFAULT_SENDER'] = os.getenv('MAIL_USERNAME')
-app.config['MAIL_MAX_EMAILS'] = None
-app.config['MAIL_SUPPRESS_SEND'] = False
-app.config['MAIL_TIMEOUT'] = 30
-
-# Vérifier la config email au démarrage
-if not app.config['MAIL_USERNAME'] or not app.config['MAIL_PASSWORD']:
-    print("⚠️ ATTENTION: Configuration email manquante!")
-    print(f"MAIL_USERNAME: {'Configuré' if app.config['MAIL_USERNAME'] else 'MANQUANT'}")
-    print(f"MAIL_PASSWORD: {'Configuré' if app.config['MAIL_PASSWORD'] else 'MANQUANT'}")
-
-mail = Mail(app)
+# Configuration Resend
+resend.api_key = os.getenv('RESEND_API_KEY')
+SENDER_EMAIL = os.getenv('SENDER_EMAIL', 'onboarding@resend.dev')
 
 # Initialiser la base de données
 try:
@@ -54,16 +37,6 @@ def validate_email(email):
     """Valide le format d'email"""
     pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
     return re.match(pattern, email) is not None
-
-def send_async_email(app, msg, email):
-    """Envoyer un email en arrière-plan"""
-    with app.app_context():
-        try:
-            mail.send(msg)
-            print(f"✅ Email envoyé avec succès à {email}")
-        except Exception as e:
-            print(f"❌ Erreur envoi email async à {email}: {e}")
-            print(traceback.format_exc())
 
 # Middleware CORS
 @app.after_request
@@ -82,14 +55,6 @@ def send_otp():
         return '', 200
         
     try:
-        # Vérifier la configuration email
-        if not app.config['MAIL_USERNAME'] or not app.config['MAIL_PASSWORD']:
-            print("❌ Configuration email manquante")
-            return jsonify({
-                'success': False,
-                'message': 'Service email non configuré. Contactez l\'administrateur.'
-            }), 500
-        
         data = request.get_json()
         if not data:
             return jsonify({
@@ -112,81 +77,58 @@ def send_otp():
             }), 400
         
         # Vérifier si l'email a déjà soumis une idée
-        try:
-            if db.has_submitted(email):
-                return jsonify({
-                    'success': False,
-                    'message': 'Vous avez déjà soumis une idée avec cet email'
-                }), 403
-        except Exception as e:
-            print(f"❌ Erreur has_submitted: {e}")
+        if db.has_submitted(email):
             return jsonify({
                 'success': False,
-                'message': 'Erreur de vérification'
-            }), 500
+                'message': 'Vous avez déjà soumis une idée avec cet email'
+            }), 403
         
         # Générer et sauvegarder l'OTP
-        try:
-            code = db.generate_otp()
-            db.save_otp(email, code)
-            print(f"✅ OTP généré: {code} pour {email}")
-        except Exception as e:
-            print(f"❌ Erreur génération OTP: {e}")
-            print(traceback.format_exc())
-            return jsonify({
-                'success': False,
-                'message': 'Erreur lors de la génération du code'
-            }), 500
+        code = db.generate_otp()
+        db.save_otp(email, code)
+        print(f"✅ OTP généré: {code} pour {email}")
         
-        # Préparer l'email
+        # Envoyer l'email avec Resend
         try:
-            msg = Message(
-                subject='Votre code de vérification - Boîte à Idées ISI',
-                recipients=[email],
-                body=f'''Bonjour,
-
-Votre code de vérification pour soumettre une idée est :
-
-{code}
-
-Ce code expire dans 10 minutes.
-
-Si vous n'avez pas demandé ce code, ignorez ce message.
-
-Cordialement,
-L'équipe ISI
-'''
-            )
+            params = {
+                "from": SENDER_EMAIL,
+                "to": [email],
+                "subject": "Votre code de vérification - Boîte à Idées ISI",
+                "html": f"""
+                <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+                    <h2 style="color: #333;">Boîte à Idées ISI</h2>
+                    <p>Bonjour,</p>
+                    <p>Votre code de vérification pour soumettre une idée est :</p>
+                    <div style="background-color: #f4f4f4; padding: 20px; text-align: center; font-size: 32px; font-weight: bold; letter-spacing: 5px; margin: 20px 0;">
+                        {code}
+                    </div>
+                    <p style="color: #666; font-size: 14px;">Ce code expire dans 10 minutes.</p>
+                    <p style="color: #666; font-size: 14px;">Si vous n'avez pas demandé ce code, ignorez ce message.</p>
+                    <hr style="margin: 30px 0; border: none; border-top: 1px solid #ddd;">
+                    <p style="color: #999; font-size: 12px;">L'équipe ISI</p>
+                </div>
+                """
+            }
             
-            # Envoyer l'email de manière asynchrone
-            thread = threading.Thread(
-                target=send_async_email, 
-                args=(app._get_current_object(), msg, email)
-            )
-            thread.daemon = True
-            thread.start()
+            email_result = resend.Emails.send(params)
+            print(f"✅ Email envoyé via Resend: {email_result}")
             
-            print(f"✅ Thread email démarré pour {email}")
+            return jsonify({
+                'success': True,
+                'message': 'Code envoyé par email'
+            }), 200
             
         except Exception as e:
-            print(f"❌ Erreur préparation email: {e}")
-            print(traceback.format_exc())
+            print(f"❌ Erreur envoi email Resend: {e}")
             # On retourne quand même success car l'OTP est sauvegardé
             return jsonify({
                 'success': True,
-                'message': 'Code généré (email en cours d\'envoi)',
-                'warning': 'L\'envoi de l\'email peut prendre quelques instants'
+                'message': 'Code généré (vérifiez vos spams)',
+                'warning': str(e)
             }), 200
-        
-        # Répondre immédiatement
-        return jsonify({
-            'success': True,
-            'message': 'Code envoyé par email'
-        }), 200
         
     except Exception as e:
         print(f"❌ Erreur send_otp: {e}")
-        print(traceback.format_exc())
         return jsonify({
             'success': False,
             'message': f'Erreur serveur: {str(e)}'
@@ -230,7 +172,6 @@ def verify_otp():
         
     except Exception as e:
         print(f"❌ Erreur verify_otp: {e}")
-        print(traceback.format_exc())
         return jsonify({
             'success': False,
             'message': f'Erreur serveur: {str(e)}'
@@ -293,7 +234,6 @@ def submit_idea():
         
     except Exception as e:
         print(f"❌ Erreur submit_idea: {e}")
-        print(traceback.format_exc())
         return jsonify({
             'success': False,
             'message': f'Erreur serveur: {str(e)}'
@@ -341,27 +281,18 @@ def health_check():
     if request.method == 'OPTIONS':
         return '', 200
     
-    # Test de la connexion DB
     db_status = "OK"
     try:
         db.get_statistics()
     except Exception as e:
         db_status = f"ERROR: {str(e)}"
     
-    # Test de la config email
-    email_config = {
-        'server': app.config.get('MAIL_SERVER'),
-        'port': app.config.get('MAIL_PORT'),
-        'username_set': bool(app.config.get('MAIL_USERNAME')),
-        'password_set': bool(app.config.get('MAIL_PASSWORD'))
-    }
-        
     return jsonify({
         'status': 'OK',
         'message': 'API Boîte à Idées ISI est en ligne',
-        'cors': 'enabled',
         'database': db_status,
-        'email': email_config
+        'email_service': 'Resend',
+        'resend_configured': bool(resend.api_key)
     }), 200
 
 @app.route('/', methods=['GET'])
@@ -369,7 +300,6 @@ def home():
     return jsonify({
         'message': 'Bienvenue sur l\'API Boîte à Idées ISI',
         'status': 'online',
-        'cors': 'enabled',
         'endpoints': {
             'health': '/api/health (GET)',
             'send_otp': '/api/send-otp (POST)',
@@ -380,22 +310,13 @@ def home():
         }
     }), 200
 
-# Gestion des erreurs
 @app.errorhandler(404)
 def not_found(error):
-    return jsonify({
-        'success': False,
-        'message': 'Route non trouvée'
-    }), 404
+    return jsonify({'success': False, 'message': 'Route non trouvée'}), 404
 
 @app.errorhandler(500)
 def internal_error(error):
-    print(f"❌ Erreur 500: {error}")
-    print(traceback.format_exc())
-    return jsonify({
-        'success': False,
-        'message': 'Erreur interne du serveur'
-    }), 500
+    return jsonify({'success': False, 'message': 'Erreur interne'}), 500
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
