@@ -1,11 +1,12 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
+from flask_mail import Mail, Message
 from datetime import datetime
 from dotenv import load_dotenv
 import database as db
 import os
 import re
-import resend
+import threading
 
 app = Flask(__name__)
 
@@ -22,9 +23,15 @@ CORS(app,
          }
      })
 
-# Configuration Resend
-resend.api_key = os.getenv('RESEND_API_KEY')
-SENDER_EMAIL = os.getenv('SENDER_EMAIL', 'onboarding@resend.dev')
+# Configuration Email avec Brevo (fonctionne immédiatement, 300 emails/jour gratuits)
+app.config['MAIL_SERVER'] = 'smtp-relay.brevo.com'
+app.config['MAIL_PORT'] = 587
+app.config['MAIL_USE_TLS'] = True
+app.config['MAIL_USERNAME'] = os.getenv('BREVO_USERNAME')
+app.config['MAIL_PASSWORD'] = os.getenv('BREVO_API_KEY')
+app.config['MAIL_DEFAULT_SENDER'] = os.getenv('BREVO_USERNAME')
+
+mail = Mail(app)
 
 # Initialiser la base de données
 try:
@@ -37,6 +44,15 @@ def validate_email(email):
     """Valide le format d'email"""
     pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
     return re.match(pattern, email) is not None
+
+def send_async_email(app, msg):
+    """Envoyer un email en arrière-plan"""
+    with app.app_context():
+        try:
+            mail.send(msg)
+            print(f"✅ Email envoyé avec succès")
+        except Exception as e:
+            print(f"❌ Erreur envoi email: {e}")
 
 # Middleware CORS
 @app.after_request
@@ -57,24 +73,15 @@ def send_otp():
     try:
         data = request.get_json()
         if not data:
-            return jsonify({
-                'success': False,
-                'message': 'Données manquantes'
-            }), 400
+            return jsonify({'success': False, 'message': 'Données manquantes'}), 400
             
         email = data.get('email', '').strip().lower()
         
         if not email:
-            return jsonify({
-                'success': False,
-                'message': 'Email requis'
-            }), 400
+            return jsonify({'success': False, 'message': 'Email requis'}), 400
         
         if not validate_email(email):
-            return jsonify({
-                'success': False,
-                'message': 'Format d\'email invalide'
-            }), 400
+            return jsonify({'success': False, 'message': 'Format d\'email invalide'}), 400
         
         # Vérifier si l'email a déjà soumis une idée
         if db.has_submitted(email):
@@ -88,51 +95,38 @@ def send_otp():
         db.save_otp(email, code)
         print(f"✅ OTP généré: {code} pour {email}")
         
-        # Envoyer l'email avec Resend
-        try:
-            params = {
-                "from": SENDER_EMAIL,
-                "to": [email],
-                "subject": "Votre code de vérification - Boîte à Idées ISI",
-                "html": f"""
-                <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-                    <h2 style="color: #333;">Boîte à Idées ISI</h2>
-                    <p>Bonjour,</p>
-                    <p>Votre code de vérification pour soumettre une idée est :</p>
-                    <div style="background-color: #f4f4f4; padding: 20px; text-align: center; font-size: 32px; font-weight: bold; letter-spacing: 5px; margin: 20px 0;">
+        # Préparer et envoyer l'email
+        msg = Message(
+            subject='Votre code de vérification - Boîte à Idées ISI',
+            recipients=[email],
+            html=f"""
+            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+                <h2 style="color: #2563eb;">Boîte à Idées ISI</h2>
+                <p>Bonjour,</p>
+                <p>Votre code de vérification pour soumettre une idée est :</p>
+                <div style="background-color: #f3f4f6; padding: 20px; text-align: center; border-radius: 8px; margin: 20px 0;">
+                    <span style="font-size: 32px; font-weight: bold; letter-spacing: 8px; color: #1f2937;">
                         {code}
-                    </div>
-                    <p style="color: #666; font-size: 14px;">Ce code expire dans 10 minutes.</p>
-                    <p style="color: #666; font-size: 14px;">Si vous n'avez pas demandé ce code, ignorez ce message.</p>
-                    <hr style="margin: 30px 0; border: none; border-top: 1px solid #ddd;">
-                    <p style="color: #999; font-size: 12px;">L'équipe ISI</p>
+                    </span>
                 </div>
-                """
-            }
-            
-            email_result = resend.Emails.send(params)
-            print(f"✅ Email envoyé via Resend: {email_result}")
-            
-            return jsonify({
-                'success': True,
-                'message': 'Code envoyé par email'
-            }), 200
-            
-        except Exception as e:
-            print(f"❌ Erreur envoi email Resend: {e}")
-            # On retourne quand même success car l'OTP est sauvegardé
-            return jsonify({
-                'success': True,
-                'message': 'Code généré (vérifiez vos spams)',
-                'warning': str(e)
-            }), 200
+                <p style="color: #6b7280; font-size: 14px;">Ce code expire dans 10 minutes.</p>
+                <p style="color: #6b7280; font-size: 14px;">Si vous n'avez pas demandé ce code, ignorez ce message.</p>
+                <hr style="margin: 30px 0; border: none; border-top: 1px solid #e5e7eb;">
+                <p style="color: #9ca3af; font-size: 12px;">L'équipe ISI</p>
+            </div>
+            """
+        )
+        
+        # Envoi asynchrone
+        thread = threading.Thread(target=send_async_email, args=(app._get_current_object(), msg))
+        thread.daemon = True
+        thread.start()
+        
+        return jsonify({'success': True, 'message': 'Code envoyé par email'}), 200
         
     except Exception as e:
         print(f"❌ Erreur send_otp: {e}")
-        return jsonify({
-            'success': False,
-            'message': f'Erreur serveur: {str(e)}'
-        }), 500
+        return jsonify({'success': False, 'message': f'Erreur serveur: {str(e)}'}), 500
 
 @app.route('/api/verify-otp', methods=['POST', 'OPTIONS'])
 def verify_otp():
@@ -142,40 +136,24 @@ def verify_otp():
     try:
         data = request.get_json()
         if not data:
-            return jsonify({
-                'success': False,
-                'message': 'Données manquantes'
-            }), 400
+            return jsonify({'success': False, 'message': 'Données manquantes'}), 400
             
         email = data.get('email', '').strip().lower()
         code = data.get('code', '').strip()
         
         if not email or not code:
-            return jsonify({
-                'success': False,
-                'message': 'Email et code requis'
-            }), 400
+            return jsonify({'success': False, 'message': 'Email et code requis'}), 400
         
-        # Vérifier l'OTP
         if db.verify_otp(email, code):
             print(f"✅ OTP vérifié pour {email}")
-            return jsonify({
-                'success': True,
-                'message': 'Code vérifié'
-            }), 200
+            return jsonify({'success': True, 'message': 'Code vérifié'}), 200
         else:
             print(f"❌ OTP invalide pour {email}")
-            return jsonify({
-                'success': False,
-                'message': 'Code invalide ou expiré'
-            }), 401
+            return jsonify({'success': False, 'message': 'Code invalide ou expiré'}), 401
         
     except Exception as e:
         print(f"❌ Erreur verify_otp: {e}")
-        return jsonify({
-            'success': False,
-            'message': f'Erreur serveur: {str(e)}'
-        }), 500
+        return jsonify({'success': False, 'message': f'Erreur serveur: {str(e)}'}), 500
 
 @app.route('/api/submit-idea', methods=['POST', 'OPTIONS'])
 def submit_idea():
@@ -185,45 +163,26 @@ def submit_idea():
     try:
         data = request.get_json()
         if not data:
-            return jsonify({
-                'success': False,
-                'message': 'Données manquantes'
-            }), 400
+            return jsonify({'success': False, 'message': 'Données manquantes'}), 400
         
         email = data.get('email', '').strip().lower()
         idea = data.get('idea', '').strip()
         category = data.get('category', '').strip()
         timestamp = data.get('timestamp', datetime.now().isoformat())
         
-        # Validations
         if not validate_email(email):
-            return jsonify({
-                'success': False,
-                'message': 'Email invalide'
-            }), 400
+            return jsonify({'success': False, 'message': 'Email invalide'}), 400
         
         if len(idea) < 20:
-            return jsonify({
-                'success': False,
-                'message': 'L\'idée doit contenir au moins 20 caractères'
-            }), 400
+            return jsonify({'success': False, 'message': 'L\'idée doit contenir au moins 20 caractères'}), 400
         
         if not category:
-            return jsonify({
-                'success': False,
-                'message': 'Veuillez sélectionner une catégorie'
-            }), 400
+            return jsonify({'success': False, 'message': 'Veuillez sélectionner une catégorie'}), 400
         
-        # Vérifier si l'étudiant a déjà soumis une idée
         if db.has_submitted(email):
-            return jsonify({
-                'success': False,
-                'message': 'Vous avez déjà soumis une idée avec cet email'
-            }), 403
+            return jsonify({'success': False, 'message': 'Vous avez déjà soumis une idée avec cet email'}), 403
         
-        # Enregistrer l'idée
         idea_id = db.save_idea(email, idea, category, timestamp)
-        
         print(f"✅ Idée #{idea_id} soumise par {email}")
         
         return jsonify({
@@ -234,47 +193,29 @@ def submit_idea():
         
     except Exception as e:
         print(f"❌ Erreur submit_idea: {e}")
-        return jsonify({
-            'success': False,
-            'message': f'Erreur serveur: {str(e)}'
-        }), 500
+        return jsonify({'success': False, 'message': f'Erreur serveur: {str(e)}'}), 500
 
 @app.route('/api/ideas', methods=['GET', 'OPTIONS'])
 def get_ideas():
     if request.method == 'OPTIONS':
         return '', 200
-        
     try:
         ideas = db.get_all_ideas()
-        return jsonify({
-            'success': True,
-            'total': len(ideas),
-            'ideas': ideas
-        }), 200
+        return jsonify({'success': True, 'total': len(ideas), 'ideas': ideas}), 200
     except Exception as e:
         print(f"❌ Erreur get_ideas: {e}")
-        return jsonify({
-            'success': False,
-            'message': f'Erreur: {str(e)}'
-        }), 500
+        return jsonify({'success': False, 'message': f'Erreur: {str(e)}'}), 500
 
 @app.route('/api/stats', methods=['GET', 'OPTIONS'])
 def get_stats():
     if request.method == 'OPTIONS':
         return '', 200
-        
     try:
         stats = db.get_statistics()
-        return jsonify({
-            'success': True,
-            'stats': stats
-        }), 200
+        return jsonify({'success': True, 'stats': stats}), 200
     except Exception as e:
         print(f"❌ Erreur get_stats: {e}")
-        return jsonify({
-            'success': False,
-            'message': f'Erreur: {str(e)}'
-        }), 500
+        return jsonify({'success': False, 'message': f'Erreur: {str(e)}'}), 500
 
 @app.route('/api/health', methods=['GET', 'OPTIONS'])
 def health_check():
@@ -291,8 +232,8 @@ def health_check():
         'status': 'OK',
         'message': 'API Boîte à Idées ISI est en ligne',
         'database': db_status,
-        'email_service': 'Resend',
-        'resend_configured': bool(resend.api_key)
+        'email_service': 'Brevo',
+        'email_configured': bool(app.config.get('MAIL_USERNAME'))
     }), 200
 
 @app.route('/', methods=['GET'])

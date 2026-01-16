@@ -4,4 +4,4 @@ python-dotenv==1.0.0
 gunicorn==21.2.0
 psycopg[binary]==3.3.2
 Flask-Mail==0.10.0
-resend==0.8.0
+
